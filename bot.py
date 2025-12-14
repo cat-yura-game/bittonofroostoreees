@@ -414,6 +414,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎲 бросить кубик (8⭐)", callback_data="dice_game")],
             [
                 InlineKeyboardButton(text="📊 Профиль", callback_data="profile"),
+                InlineKeyboardButton(text="💫 Пополнить бота", callback_data="topup"),
             ],
             [InlineKeyboardButton(text="🎮 Купить попытки", callback_data="buy_attempts")],
             [InlineKeyboardButton(text="🎁 Вывод", callback_data="gift")],
@@ -1544,3 +1545,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
