@@ -1,3 +1,4 @@
+from aiohttp import web
 import asyncio
 import logging
 import os
@@ -1527,16 +1528,33 @@ async def handle_promo_or_other(message: Message):
     # — если сообщение не относится к промокоду —
     # ничего не делаем
 
+# ===== keep-alive web server for Render =====
+
+async def handle_root(request):
+    return web.Response(text="OK")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", handle_root)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 # ================== ЗАПУСК БОТА ==================
 
 
 async def main():
-    if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_BOT_TOKEN_HERE":
-        raise RuntimeError("Вставь токен бота в BOT_TOKEN или в переменную окружения BOT_TOKEN.")
+    await start_web()   # ← ВАЖНО: ДО polling
 
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
+
+    await dp.start_polling(bot)
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
@@ -1544,3 +1562,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
