@@ -18,7 +18,16 @@ from aiogram.types import (
     LabeledPrice,
     PreCheckoutQuery,
     FSInputFile,
+
+from db import init_db
+
+async def main():
+    init_db()   # ← ОБЯЗАТЕЛЬНО
+    bot = Bot(BOT_TOKEN)
+    ...
+
 )
+
 
 # ================== НАСТРОЙКИ ==================
 
@@ -1528,6 +1537,38 @@ async def handle_promo_or_other(message: Message):
     # — если сообщение не относится к промокоду —
     # ничего не делаем
 
+
+def get_user(user_id: int):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM users WHERE user_id = %s",
+            (user_id,)
+        )
+        row = cur.fetchone()
+
+        if not row:
+            cur.execute(
+                "INSERT INTO users (user_id) VALUES (%s)",
+                (user_id,)
+            )
+            return (user_id, 0, 0, 0)
+
+        return row
+
+
+def add_wins(user_id: int, amount: int):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET wins = wins + %s WHERE user_id = %s",
+            (amount, user_id)
+        )
+
+@router.message(Command("testdb"))
+async def testdb(message: Message):
+    user = get_user(message.from_user.id)
+    add_wins(message.from_user.id, 5)
+    await message.answer(f"БД работает. Было побед: {user[1]}")
+
 # ================== ЗАПУСК БОТА ==================
 
 
@@ -1545,4 +1586,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
