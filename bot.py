@@ -211,6 +211,51 @@ async def paid(m: Message):
 
     await m.answer("✅ Платёж принят", reply_markup=main_kb())
 
+@router.message(Command("testvip"))
+async def cmd_testvip(message: Message):
+    # только для админов
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Эта команда только для админов.")
+        return
+
+    parts = message.text.split()
+
+    # /testvip → выдать себе
+    if len(parts) == 1:
+        target_id = message.from_user.id
+
+    # /testvip <user_id> → выдать другому
+    elif len(parts) == 2:
+        try:
+            target_id = int(parts[1])
+        except ValueError:
+            await message.answer("❌ user_id должен быть числом.")
+            return
+    else:
+        await message.answer(
+            "Использование:\n"
+            "/testvip — выдать VIP себе\n"
+            "/testvip <user_id> — выдать VIP пользователю"
+        )
+        return
+
+    user = get_user(target_id)
+
+    if user["vip"] == 1:
+        await message.answer(f"ℹ️ У пользователя {target_id} уже есть VIP.")
+        return
+
+    save(user_id=target_id, vip=1)
+
+    await message.answer(
+        f"💎 VIP успешно выдан!\n\n"
+        f"Пользователь: {target_id}\n"
+        f"Режим: TEST (бесплатно)\n\n"
+        f"Теперь у него:\n"
+        f"• больше бесплатных попыток\n"
+        f"• выше шанс победы\n"
+        f"• меньше побед для вывода 🎁"
+    )
 
 # ================= ЗАПУСК =================
 
@@ -223,5 +268,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
