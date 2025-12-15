@@ -36,7 +36,7 @@ WINS_25 = 100
 # VIP
 VIP_PRICE = 9
 VIP_DAILY_ATTEMPTS = 30
-VIP_WIN_CHANCE = 0.40”
+VIP_WIN_CHANCE = 0.40
 VIP_WINS_15 = 40
 VIP_WINS_25 = 85
 
@@ -223,4 +223,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
