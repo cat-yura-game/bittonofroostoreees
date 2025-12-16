@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -11,43 +11,58 @@ from aiogram.filters import Command
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
     LabeledPrice,
     PreCheckoutQuery,
     FSInputFile
 )
 
-# ================= НАСТРОЙКИ =================
+# ============================================================
+#                     ⚙️ НАСТРОЙКИ БОТА
+# ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "ВСТАВЬ_ТОКЕН"
 
-ADMIN_IDS = {5647539598}
+CAT_PHOTO = "cat.jpg"  # картинка, отправляется при победе
+
+# 🎁 Стоимость подарков (внутренних stars)
+GIFT_15_COST = 50       # обычный
+GIFT_15_COST_VIP = 40   # VIP
+
+GIFT_25_COST = 100
+GIFT_25_COST_VIP = 85
+
+# 🎁 Telegram Gift ID (эти подарки бот отправляет автоматически)
+TG_GIFT_15_ID = "5170233102089322756"
+TG_GIFT_25_ID = "5170250947678437525"
+
+# ⭐ Настройки игры
+STAR_PER_WIN = 1                 # сколько stars за победу
+DAILY_ATTEMPTS = 15              # обычные пользователи
+VIP_DAILY_ATTEMPTS = 30
+BASE_WIN_CHANCE = 0.27
+VIP_WIN_CHANCE = 0.40
+
+# 🛒 Варианты покупки попыток (стоимость в XTR)
+ATTEMPT_PACKS = {
+    10: 5,     # 10 попыток = 5 XTR
+    20: 8,     # 20 попыток = 8 XTR
+    50: 13     # 50 попыток = 13 XTR
+}
+
+# 🎟️ Промокоды (ключ → количество stars)
+PROMOCODES = {
+    "FREE10": 10,
+    "BIGSTAR": 25,
+    "WELCOME": 5
+}
+
+# ============================================================
+#                         🗄️ БАЗА ДАННЫХ
+# ============================================================
 
 DB_PATH = "bot.db"
-CAT_PHOTO = "cat.jpg"
-
-# обычные
-DAILY_ATTEMPTS = 15
-WIN_CHANCE = 0.27
-WINS_15 = 50
-WINS_25 = 100
-
-# VIP
-VIP_PRICE = 9
-VIP_DAILY_ATTEMPTS = 30
-VIP_WIN_CHANCE = 0.40
-VIP_WINS_15 = 40
-VIP_WINS_25 = 85
-
-GIFT_15_ID = "5170233102089322756"
-GIFT_25_ID = "5170250947678437525"
-
-logging.basicConfig(level=logging.INFO)
-
-router = Router()
-
-# ================= БАЗА =================
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
@@ -55,211 +70,406 @@ conn.row_factory = sqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    total_wins INTEGER DEFAULT 0,
-    wins_for_gift INTEGER DEFAULT 0,
-    gifts INTEGER DEFAULT 0,
+    stars INTEGER DEFAULT 0,
     daily_used INTEGER DEFAULT 0,
     last_date TEXT,
-    purchased INTEGER DEFAULT 0,
+    attempts_purchased INTEGER DEFAULT 0,
     vip INTEGER DEFAULT 0
 )
 """)
+
+conn.execute("""
+CREATE TABLE IF NOT EXISTS promo_used (
+    user_id INTEGER,
+    code TEXT,
+    PRIMARY KEY (user_id, code)
+)
+""")
+
 conn.commit()
 
+# ============================================================
+#                    🧰 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
 
 def get_user(uid: int):
     cur = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,))
-    row = cur.fetchone()
-    if not row:
-        conn.execute("INSERT INTO users(user_id,last_date) VALUES(?,?)",
-                     (uid, date.today().isoformat()))
+    r = cur.fetchone()
+    if not r:
+        conn.execute("INSERT INTO users(user_id,last_date) VALUES(?,?)", (uid, date.today().isoformat()))
         conn.commit()
         return get_user(uid)
-    return dict(row)
+    return dict(r)
 
 
-def save(**kw):
-    uid = kw.pop("user_id")
-    fields = ", ".join(f"{k}=?" for k in kw)
-    conn.execute(f"UPDATE users SET {fields} WHERE user_id=?",
-                 (*kw.values(), uid))
+def save(uid: int, **fields):
+    sql = ", ".join(f"{k}=?" for k in fields)
+    conn.execute(f"UPDATE users SET {sql} WHERE user_id=?", (*fields.values(), uid))
     conn.commit()
 
 
-# ================= КЛАВИАТУРА =================
+def already_used_promo(uid: int, code: str) -> bool:
+    cur = conn.execute("SELECT 1 FROM promo_used WHERE user_id=? AND code=?", (uid, code))
+    return cur.fetchone() is not None
+
+
+def mark_promo_used(uid: int, code: str):
+    conn.execute("INSERT OR IGNORE INTO promo_used(user_id, code) VALUES(?,?)", (uid, code))
+    conn.commit()
+
+
+# ============================================================
+#                       🔘 ГЛАВНАЯ КЛАВИАТУРА
+# ============================================================
 
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="😼 Зашугать кота", callback_data="play")],
-        [InlineKeyboardButton(text="🎲 Кубик", callback_data="dice")],
-        [InlineKeyboardButton(text="📊 Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="🐾 Зашугать кота", callback_data="play")],
+        [InlineKeyboardButton(text="✨ Подарки", callback_data="gifts")],
+        [InlineKeyboardButton(text="🎟 Промокод", callback_data="promo")],
         [InlineKeyboardButton(text="🎮 Купить попытки", callback_data="buy")],
-        [InlineKeyboardButton(text="💎 VIP за 8⭐", callback_data="vip")],
-        [InlineKeyboardButton(text="🎁 Вывод", callback_data="withdraw")],
-        [InlineKeyboardButton(text="🏆 Топ побед", callback_data="top")]
+        [InlineKeyboardButton(text="💎 VIP режим", callback_data="vip_info")],
+        [InlineKeyboardButton(text="📊 Профиль", callback_data="profile")]
     ])
 
+# ============================================================
+#                     🎮 ЛОГИКА ИГРЫ
+# ============================================================
 
-# ================= START =================
-
-@router.message(Command("start"))
-async def start(m: Message):
-    await m.answer(
-        "😼 *Добро пожаловать!*\n\n"
-        "Ты можешь зашугать кота, копить победы и выводить подарки 🎁\n\n"
-        "VIP даёт больше шансов и быстрее вывод 💎",
-        reply_markup=main_kb(),
-        parse_mode="Markdown"
-    )
-
-
-# ================= ИГРА =================
-
-@router.callback_query(F.data == "play")
-async def play(cb: CallbackQuery):
-    u = get_user(cb.from_user.id)
-
+async def handle_daily_attempts(user):
+    """Обновляет попытки, если новый день"""
     today = date.today().isoformat()
-    if u["last_date"] != today:
-        save(user_id=cb.from_user.id, daily_used=0, last_date=today)
-        u = get_user(cb.from_user.id)
-
-    vip = u["vip"] == 1
-    limit = VIP_DAILY_ATTEMPTS if vip else DAILY_ATTEMPTS
-    chance = VIP_WIN_CHANCE if vip else WIN_CHANCE
-
-    free_left = max(0, limit - u["daily_used"])
-    total = free_left + u["purchased"]
-
-    if total <= 0:
-        await cb.answer("❌ Попытки закончились", show_alert=True)
-        return
-
-    if free_left > 0:
-        save(user_id=cb.from_user.id, daily_used=u["daily_used"] + 1)
+    if user["last_date"] != today:
+        new_attempts = VIP_DAILY_ATTEMPTS if user["vip"] else DAILY_ATTEMPTS
+        save(user["user_id"], last_date=today, daily_used=0)
+        return new_attempts
     else:
-        save(user_id=cb.from_user.id, purchased=u["purchased"] - 1)
+        used = user["daily_used"] + user["attempts_purchased"]
+        max_attempts = VIP_DAILY_ATTEMPTS if user["vip"] else DAILY_ATTEMPTS
+        return max_attempts - used
 
+
+async def play_game(uid: int):
+    user = get_user(uid)
+    await handle_daily_attempts(user)
+
+    used_total = user["daily_used"] + user["attempts_purchased"]
+    max_attempts = VIP_DAILY_ATTEMPTS if user["vip"] else DAILY_ATTEMPTS
+
+    if used_total >= max_attempts:
+        return False, "❌ У тебя закончились попытки!"
+
+    # Победа?
+    chance = VIP_WIN_CHANCE if user["vip"] else BASE_WIN_CHANCE
     win = random.random() < chance
 
     if win:
-        save(
-            user_id=cb.from_user.id,
-            total_wins=u["total_wins"] + 1,
-            wins_for_gift=u["wins_for_gift"] + 1
+        new_stars = user["stars"] + STAR_PER_WIN
+        save(uid, stars=new_stars)
+
+    # Списываем попытку
+    if user["daily_used"] < max_attempts:
+        save(uid, daily_used=user["daily_used"] + 1)
+    else:
+        save(uid, attempts_purchased=user["attempts_purchased"] - 1)
+
+    return win, "win" if win else "lose"
+
+
+# ============================================================
+#                   🎁 ПОКУПКА ПОДАРКОВ
+# ============================================================
+
+async def send_gift(bot: Bot, uid: int, gift_id: str):
+    try:
+        await bot.send_gift(user_id=uid, gift_id=gift_id)
+        return True
+    except Exception as e:
+        print("Ошибка отправки подарка:", e)
+        return False
+
+
+def gift_cost(user, gift_type):
+    if gift_type == 15:
+        return GIFT_15_COST_VIP if user["vip"] else GIFT_15_COST
+    if gift_type == 25:
+        return GIFT_25_COST_VIP if user["vip"] else GIFT_25_COST
+    return 999999
+
+
+# ============================================================
+#                   🎟 ПРОМОКОДЫ
+# ============================================================
+
+async def activate_promo(uid: int, code: str):
+    code = code.upper()
+
+    if code not in PROMOCODES:
+        return "❌ Такого промокода не существует!"
+
+    if already_used_promo(uid, code):
+        return "⚠️ Ты уже использовал этот промокод!"
+
+    stars_add = PROMOCODES[code]
+
+    user = get_user(uid)
+    save(uid, stars=user["stars"] + stars_add)
+    mark_promo_used(uid, code)
+
+    return f"🎉 Промокод активирован!\nТы получил ⭐ {stars_add} внутренние звезды!"
+
+
+# ============================================================
+#                   🛒 ПОКУПКА ПОПЫТОК ЧЕРЕЗ XTR
+# ============================================================
+
+async def create_invoice_packs(packs: dict):
+    keyboard = []
+    for attempts, price in packs.items():
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{attempts} попыток — {price} XTR",
+                callback_data=f"buy_pack_{attempts}"
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def add_attempts(uid: int, amount: int):
+    user = get_user(uid)
+    save(uid, attempts_purchased=user["attempts_purchased"] + amount)
+
+
+# ============================================================
+#                   🌟 VIP РЕЖИМ
+# ============================================================
+
+async def buy_vip(uid: int):
+    user = get_user(uid)
+    if user["vip"]:
+        return "Ты уже VIP 😎"
+
+    save(uid, vip=1)
+    return "💎 Поздравляю! Теперь ты VIP-пользователь!\nТвои шансы, награды и лимиты увеличены!"
+
+
+# ============================================================
+#                  📌 ОБРАБОТЧИКИ КОМАНД / CALLBACK
+# ============================================================
+
+router = Router()
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer(
+        "🐾 **Добро пожаловать в игру — Шугани Кота!**\n\n"
+        "Здесь ты можешь получать ⭐ внутренние звезды, покупать подарки, активировать VIP режим\n"
+        "и участвовать в самой милой (и чуть-чуть сумасшедшей) игре в Telegram 😼\n\n"
+        "Выбирай действие:",
+        reply_markup=main_kb()
+    )
+
+
+# ========================= ИГРА ==============================
+
+@router.callback_query(F.data == "play")
+async def cb_play(call: CallbackQuery):
+    win, status = await play_game(call.from_user.id)
+
+    if not win and status != "win":
+        return await call.message.answer(
+            "😿 Попытка неудачна… Котик оказался быстрее!\nПопробуй снова!",
+            reply_markup=main_kb()
         )
 
-    text = "🎉 *Ты зашугал кота!*" if win else "😼 Кот не испугался"
-    await cb.message.answer(text, reply_markup=main_kb(), parse_mode="Markdown")
-    await cb.answer()
-
-
-# ================= КУБИК =================
-
-@router.callback_query(F.data == "dice")
-async def dice(cb: CallbackQuery, bot: Bot):
-    prices = [LabeledPrice(label="🎲 Кубик", amount=5)]
-    await bot.send_invoice(
-        chat_id=cb.from_user.id,
-        title="Кубик",
-        description="Выпадет 3 — мишка 🧸",
-        payload="dice",
-        currency="XTR",
-        prices=prices,
-        provider_token=""
+    # Победа — отправляем картинку + награду
+    photo = FSInputFile(CAT_PHOTO)
+    await call.message.answer_photo(
+        photo,
+        caption=f"🎉 Ты зашугал кота!\nТвоя награда: ⭐ {STAR_PER_WIN}",
+        reply_markup=main_kb()
     )
 
 
-# ================= VIP =================
+# ========================= ПОДАРКИ ==============================
 
-@router.callback_query(F.data == "vip")
-async def vip(cb: CallbackQuery, bot: Bot):
-    prices = [LabeledPrice(label="VIP доступ", amount=VIP_PRICE)]
-    await bot.send_invoice(
-        chat_id=cb.from_user.id,
-        title="VIP 💎",
-        description="Больше попыток, выше шанс победы",
-        payload="vip",
-        currency="XTR",
-        prices=prices,
-        provider_token=""
+@router.callback_query(F.data == "gifts")
+async def cb_gifts(call: CallbackQuery):
+    user = get_user(call.from_user.id)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Подарок за 15 stars", callback_data="gift_15")],
+        [InlineKeyboardButton(text="🎁 Подарок за 25 stars", callback_data="gift_25")],
+        [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+    ])
+
+    await call.message.answer(
+        f"🎁 **Магазин подарков**\n\n"
+        f"У тебя ⭐ {user['stars']} stars\n\n"
+        f"Стоимость (внутренние звезды):\n"
+        f"• Подарок 15 stars — {gift_cost(user, 15)}\n"
+        f"• Подарок 25 stars — {gift_cost(user, 25)}\n",
+        reply_markup=kb
     )
 
 
-# ================= ПЛАТЕЖИ =================
+@router.callback_query(F.data.startswith("gift_"))
+async def cb_gift(call: CallbackQuery, bot: Bot):
+    uid = call.from_user.id
+    user = get_user(uid)
+    gift_type = int(call.data.split("_")[1])
+
+    cost = gift_cost(user, gift_type)
+
+    if user["stars"] < cost:
+        return await call.message.answer(
+            f"❌ Недостаточно внутренний звёзд!\nТебе нужно ⭐ {cost}",
+            reply_markup=main_kb()
+        )
+
+    save(uid, stars=user["stars"] - cost)
+
+    tg_gift_id = TG_GIFT_15_ID if gift_type == 15 else TG_GIFT_25_ID
+
+    ok = await send_gift(bot, uid, tg_gift_id)
+
+    if ok:
+        await call.message.answer(
+            f"🎉 Ты получил Telegram подарок за {gift_type} ⭐!",
+            reply_markup=main_kb()
+        )
+    else:
+        await call.message.answer(
+            "⚠️ Ошибка при отправке подарка. Напиши создателю.",
+            reply_markup=main_kb()
+        )
+
+# ========================= ПРОМОКОД ==============================
+
+@router.callback_query(F.data == "promo")
+async def cb_promo(call: CallbackQuery):
+    await call.message.answer(
+        "🎟 Введи промокод одним сообщением:",
+    )
+
+
+@router.message()
+async def msg_promo(message: Message):
+    text = message.text.strip()
+
+    if len(text) < 3:
+        return
+
+    uid = message.from_user.id
+    result = await activate_promo(uid, text)
+    await message.answer(result, reply_markup=main_kb())
+
+
+# ========================= ПОКУПКА ПОПЫТОК ==============================
+
+@router.callback_query(F.data == "buy")
+async def cb_buy(call: CallbackQuery):
+    kb = await create_invoice_packs(ATTEMPT_PACKS)
+
+    await call.message.answer(
+        "🛒 Выбери, сколько попыток ты хочешь купить:",
+        reply_markup=kb
+    )
+
+
+@router.callback_query(F.data.startswith("buy_pack_"))
+async def cb_buy_pack(call: CallbackQuery, bot: Bot):
+    attempts = int(call.data.split("_")[2])
+    price_xtr = ATTEMPT_PACKS[attempts]
+
+    await bot.send_invoice(
+        chat_id=call.from_user.id,
+        title=f"Покупка {attempts} попыток",
+        description=f"{attempts} попыток для игры 'Зашугай кота'",
+        payload=f"attempts_{attempts}",
+        provider_token="",   # оставь пустым — Telegram Stars
+        currency="XTR",
+        prices=[LabeledPrice(label="Попытки", amount=price_xtr)],
+    )
+
 
 @router.pre_checkout_query()
-async def pre(pre: PreCheckoutQuery):
-    await pre.answer(ok=True)
+async def pc_check(query: PreCheckoutQuery):
+    await query.answer(ok=True)
 
 
 @router.message(F.successful_payment)
-async def paid(m: Message):
-    sp = m.successful_payment
+async def successful_payment(message: Message):
+    payload = message.successful_payment.invoice_payload
+    _, amount = payload.split("_")
+    amount = int(amount)
 
-    if sp.invoice_payload == "vip":
-        save(user_id=m.from_user.id, vip=1)
-        await m.answer("💎 VIP активирован!", reply_markup=main_kb())
-
-    elif sp.invoice_payload == "dice":
-        msg = await m.answer_dice("🎲")
-        await asyncio.sleep(4)
-        if msg.dice.value == 3:
-            await m.answer("🎉 Выпало 3! Ты выиграл 🧸")
-        else:
-            await m.answer("😼 Не повезло")
-
-    await m.answer("✅ Платёж принят", reply_markup=main_kb())
-
-@router.message(Command("testvip"))
-async def cmd_testvip(message: Message):
-    # только для админов
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Эта команда только для админов.")
-        return
-
-    parts = message.text.split()
-
-    # /testvip → выдать себе
-    if len(parts) == 1:
-        target_id = message.from_user.id
-
-    # /testvip <user_id> → выдать другому
-    elif len(parts) == 2:
-        try:
-            target_id = int(parts[1])
-        except ValueError:
-            await message.answer("❌ user_id должен быть числом.")
-            return
-    else:
-        await message.answer(
-            "Использование:\n"
-            "/testvip — выдать VIP себе\n"
-            "/testvip <user_id> — выдать VIP пользователю"
-        )
-        return
-
-    user = get_user(target_id)
-
-    if user["vip"] == 1:
-        await message.answer(f"ℹ️ У пользователя {target_id} уже есть VIP.")
-        return
-
-    save(user_id=target_id, vip=1)
+    await add_attempts(message.from_user.id, amount)
 
     await message.answer(
-        f"💎 VIP успешно выдан!\n\n"
-        f"Пользователь: {target_id}\n"
-        f"Режим: TEST (бесплатно)\n\n"
-        f"Теперь у него:\n"
-        f"• больше бесплатных попыток\n"
-        f"• выше шанс победы\n"
-        f"• меньше побед для вывода 🎁"
+        f"🎉 Покупка успешна!\n"
+        f"Добавлено {amount} попыток!",
+        reply_markup=main_kb()
     )
 
-# ================= ЗАПУСК =================
+
+# ========================= VIP ==============================
+
+@router.callback_query(F.data == "vip_info")
+async def vip_info(call: CallbackQuery):
+    user = get_user(call.from_user.id)
+
+    await call.message.answer(
+        "💎 **VIP режим**\n\n"
+        "• +100% попыток в день\n"
+        "• Повышенный шанс победы\n"
+        "• Скидки на внутренние подарки\n"
+        "• Золотая VIP-корона в профиле 👑\n\n"
+        "Цена: 30 XTR (единоразово)\n\n"
+        "Купить VIP?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 Купить", callback_data="vip_buy")],
+            [InlineKeyboardButton(text="⬅ Назад", callback_data="back")]
+        ])
+    )
+
+
+@router.callback_query(F.data == "vip_buy")
+async def vip_buy(call: CallbackQuery):
+    msg = await buy_vip(call.from_user.id)
+    await call.message.answer(msg, reply_markup=main_kb())
+
+
+# ========================= ПРОФИЛЬ ==============================
+
+@router.callback_query(F.data == "profile")
+async def profile(call: CallbackQuery):
+    u = get_user(call.from_user.id)
+
+    await call.message.answer(
+        f"👤 **Твой профиль**\n\n"
+        f"⭐ Stars: {u['stars']}\n"
+        f"🎮 Использовано попыток: {u['daily_used']} / {VIP_DAILY_ATTEMPTS if u['vip'] else DAILY_ATTEMPTS}\n"
+        f"🛒 Купленные попытки: {u['attempts_purchased']}\n"
+        f"💎 VIP: {'ДА 👑' if u['vip'] else 'нет'}\n",
+        reply_markup=main_kb()
+    )
+
+
+# ========================= НАЗАД ==============================
+
+@router.callback_query(F.data == "back")
+async def back(call: CallbackQuery):
+    await call.message.answer("Главное меню:", reply_markup=main_kb())
+
+
+# ============================================================
+#                        🚀 ЗАПУСК
+# ============================================================
 
 async def main():
+    logging.basicConfig(level=logging.INFO)
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
@@ -268,6 +478,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
